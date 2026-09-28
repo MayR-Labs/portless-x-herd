@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck -S warning portless-herd.sh
+      - name: bash -n
+        run: bash -n portless-herd.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $r = Invoke-ScriptAnalyzer ./portless-herd.ps1 -Severity Error
+          $r | Format-Table -AutoSize
+          if ($r) { exit 1 }
+      - name: PowerShell script is ASCII-only
+        run: "! grep -nP '[^\\x00-\\x7F]' portless-herd.ps1"
+
+  smoke-linux:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: setup (standalone, :443 via sudo)
+        run: ./portless-herd.sh setup -y
+        env:
+          SHELL_RC: ${{ runner.temp }}/rc
+      - name: status
+        run: ./portless-herd.sh status
+        env:
+          SHELL_RC: ${{ runner.temp }}/rc
+      - name: setup is idempotent
+        run: ./portless-herd.sh setup -y
+        env:
+          SHELL_RC: ${{ runner.temp }}/rc
+      - name: interactive mode without a terminal doesn't hang
+        run: timeout 60 ./portless-herd.sh </dev/null
+        env:
+          SHELL_RC: ${{ runner.temp }}/rc
+      - name: teardown
+        run: ./portless-herd.sh teardown -y
+        env:
+          SHELL_RC: ${{ runner.temp }}/rc
+      - name: rc block removed
+        run: "! grep -q 'portless-herd' '${{ runner.temp }}/rc'"
+
+  smoke-windows:
+    needs: lint
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell]   # PowerShell 7 and Windows PowerShell 5.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: setup (standalone)
+        shell: ${{ matrix.shell }}
+        run: ./portless-herd.ps1 setup -Mode standalone -ProxyPort 1377 -Yes
+      - name: status
+        shell: ${{ matrix.shell }}
+        run: ./portless-herd.ps1 status -Mode standalone -ProxyPort 1377
+      - name: status uses saved settings
+        shell: ${{ matrix.shell }}
+        run: ./portless-herd.ps1 status
+      - name: teardown
+        shell: ${{ matrix.shell }}
+        run: ./portless-herd.ps1 teardown -Yes
